@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": ["Bash(rm -rf *)"],
+    "allow": [
+      "Read *",
+      "Edit *",
+      "Write *",
+      "Glob",
+      "Grep *",
+      "Bash(cd *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(go build:*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git checkout -b *)",
+      "Bash(docker ps*)",
+      "Bash(ls:*) *",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(npm *)",
+      "Bash(nohup *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(unzip *)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY": "10",
+    "CLAUDE_AUTO_BACKGROUND_TASKS": "1"
+  },
+  "model": "sonnet",
+  "MAX_THINKING_TOKENS": 10000,
+  "CLAUDE_CODE_SUBAGENT_MODEL": "haiku",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "eval \"$(conda shell.bash hook 2>/dev/null)\" && conda activate py311 && echo \"export PATH=\\\"$CONDA_PREFIX/bin:$PATH\\\"\" > \"$CLAUDE_ENV_FILE\"",
+            "timeout": 120,
+            "statusMessage": "conda activate py311"
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/reinject_context.py",
+            "timeout": 15,
+            "statusMessage": "Re-inject project rules after compact"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/security_guard.py",
+            "timeout": 10,
+            "statusMessage": "Security guard (bash)"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/security_guard.py",
+            "timeout": 10,
+            "statusMessage": "Security guard (files)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/doc_sync_warn.py",
+            "timeout": 10,
+            "statusMessage": "docs/ko-en sync check"
+          }
+        ]
+      }
+    ]
+  }
+}
