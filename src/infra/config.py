@@ -30,20 +30,21 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = Field(
-        ...,
+        default="sqlite+aiosqlite:///./dev.db",
         description="SQLAlchemy async URL, e.g. postgresql+asyncpg://... or sqlite+aiosqlite:///./dev.db",
     )
 
     # ── Microsoft Graph / Bot ─────────────────────────────────────────────────
-    azure_tenant_id: str = Field(..., description="Azure AD tenant ID")
-    azure_client_id: str = Field(..., description="Azure AD app client ID")
-    azure_client_secret: str = Field(..., description="Azure AD app client secret")
-    bot_app_id: str = Field(..., description="Bot Framework App ID")
-    bot_app_password: str = Field(..., description="Bot Framework App Password")
+    # Optional in local dev — required in production
+    azure_tenant_id: str = Field(default="dev-tenant", description="Azure AD tenant ID")
+    azure_client_id: str = Field(default="dev-client-id", description="Azure AD app client ID")
+    azure_client_secret: str = Field(default="dev-client-secret", description="Azure AD app client secret")
+    bot_app_id: str = Field(default="dev-local", description="Bot Framework App ID")
+    bot_app_password: str = Field(default="dev-local", description="Bot Framework App Password")
 
     # ── Scheduler HMAC ────────────────────────────────────────────────────────
     scheduler_hmac_secret: str = Field(
-        ...,
+        default="dev-hmac-secret-change-in-production",
         description="Shared secret for HMAC-SHA256 verification of scheduler calls",
     )
 
@@ -72,7 +73,7 @@ class Settings(BaseSettings):
         ]
 
     # ── Anthropic LLM ─────────────────────────────────────────────────────────
-    anthropic_api_key: str = Field(..., description="Anthropic API key")
+    anthropic_api_key: str = Field(default="", description="Anthropic API key (required for LLM features)")
     anthropic_model: str = Field(
         "claude-sonnet-4-6",
         description="Anthropic model ID to use for report drafting",

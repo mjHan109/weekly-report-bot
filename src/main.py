@@ -18,8 +18,8 @@ async def lifespan(app: FastAPI):
     """Application startup / shutdown lifecycle."""
     settings = get_settings()
 
-    # Validate INITIAL_ADMIN_USER_IDS at startup — fail fast
-    if not settings.initial_admin_user_ids:
+    # Validate INITIAL_ADMIN_USER_IDS at startup — skip in local debug mode
+    if not settings.initial_admin_user_ids and not settings.debug:
         raise RuntimeError(
             "INITIAL_ADMIN_USER_IDS is missing or empty. "
             "Set a comma-separated list of AAD object IDs in the environment."
