@@ -1,0 +1,17 @@
+PLACEHOLDER — color.png
+
+This file must be replaced with an actual 192x192 PNG icon before packaging
+the Teams app manifest zip.
+
+Requirements (Teams App manifest v1.17):
+  - File name : color.png
+  - Dimensions: 192 x 192 pixels
+  - Format    : PNG with transparency
+  - Max size  : 1.5 MB
+  - Usage     : Full-colour icon displayed in the Teams app store and channel tab.
+
+To package the manifest:
+  1. Place the real color.png and outline.png alongside manifest.json.
+  2. Zip all three files (manifest.json, color.png, outline.png) into a single
+     .zip archive (e.g. weeklyreportbot.zip).
+  3. Upload via Teams Admin Center or sideload in Teams Developer Portal.

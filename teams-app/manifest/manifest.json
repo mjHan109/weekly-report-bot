@@ -1,0 +1,74 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "${TEAMS_APP_ID}",
+  "packageName": "com.example.weeklyreportbot",
+  "developer": {
+    "name": "Your Organization",
+    "websiteUrl": "https://${BOT_DOMAIN}",
+    "privacyUrl": "https://${BOT_DOMAIN}/privacy",
+    "termsOfUseUrl": "https://${BOT_DOMAIN}/terms"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "주간 보고 봇",
+    "full": "Teams 주간 보고 자동화 봇"
+  },
+  "description": {
+    "short": "주간 보고 작성·취합·메일 발송 자동화",
+    "full": "팀 채널에서 주간 보고를 작성하고, 팀장이 취합하여 메일로 발송할 수 있는 자동화 봇입니다."
+  },
+  "accentColor": "#0078D4",
+  "bots": [
+    {
+      "botId": "${MICROSOFT_APP_ID}",
+      "scopes": [
+        "team",
+        "groupchat"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "team",
+            "groupchat"
+          ],
+          "commands": [
+            {
+              "title": "이번 주 보고 작성",
+              "description": "이번 주 주간 보고서를 작성합니다."
+            },
+            {
+              "title": "팀 주간 보고 취합",
+              "description": "팀원 보고를 취합합니다. (팀장 전용)"
+            },
+            {
+              "title": "보고 대상 지정",
+              "description": "이번 주 보고 대상자를 지정합니다. (팀장 전용)"
+            },
+            {
+              "title": "팀장 등록",
+              "description": "현재 채널의 팀장을 등록합니다."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "${BOT_DOMAIN}"
+  ],
+  "webApplicationInfo": {
+    "id": "${MICROSOFT_APP_ID}",
+    "resource": "https://graph.microsoft.com"
+  }
+}

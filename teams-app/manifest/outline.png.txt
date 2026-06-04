@@ -1,0 +1,18 @@
+PLACEHOLDER — outline.png
+
+This file must be replaced with an actual 32x32 PNG icon before packaging
+the Teams app manifest zip.
+
+Requirements (Teams App manifest v1.17):
+  - File name : outline.png
+  - Dimensions: 32 x 32 pixels
+  - Format    : PNG — transparent background with white foreground only
+  - Max size  : 1.5 MB
+  - Usage     : Single-colour outline icon shown in the Teams left rail and
+                compose box.
+
+To package the manifest:
+  1. Place the real color.png and outline.png alongside manifest.json.
+  2. Zip all three files (manifest.json, color.png, outline.png) into a single
+     .zip archive (e.g. weeklyreportbot.zip).
+  3. Upload via Teams Admin Center or sideload in Teams Developer Portal.
