@@ -128,7 +128,7 @@ def test_deadline_endpoint_calls_deadline_service(client: TestClient):
     mock_factory = MagicMock(return_value=mock_session)
 
     with patch(
-        "src.api.routes.scheduler._get_session_factory",
+        "src.infra.db._get_session_factory",
         return_value=mock_factory,
     ), patch(
         "src.api.routes.scheduler.DeadlineService",
