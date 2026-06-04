@@ -108,8 +108,9 @@ async def _check_registration_acl(
 
 
 def _is_initial_admin(aad_id: str) -> bool:
-    """Check the INITIAL_ADMIN_AAD_IDS environment variable."""
-    admin_ids_raw = os.environ.get("INITIAL_ADMIN_AAD_IDS", "")
+    """Check the INITIAL_ADMIN_USER_IDS setting (ADR-SEC-002)."""
+    from src.infra.config import get_settings
+    admin_ids_raw = get_settings().initial_admin_user_ids
     admin_ids = {aid.strip() for aid in admin_ids_raw.split(",") if aid.strip()}
     return aad_id in admin_ids
 

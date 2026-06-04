@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 _APP_ID: str = os.environ.get("MICROSOFT_APP_ID", "")
 _APP_PASSWORD: str = os.environ.get("MICROSOFT_APP_PASSWORD", "")
 
+# ADR-SEC-007: empty APP_ID silently disables JWT verification — fail fast
+if not _APP_ID:
+    raise RuntimeError(
+        "MICROSOFT_APP_ID environment variable is not set. "
+        "Bot JWT verification would be disabled. Refusing to start."
+    )
+
 _adapter_settings = BotFrameworkAdapterSettings(
     app_id=_APP_ID,
     app_password=_APP_PASSWORD,
