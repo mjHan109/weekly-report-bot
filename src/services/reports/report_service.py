@@ -170,7 +170,7 @@ class ReportService:
     # ── Reporter assignment ───────────────────────────────────────────────────
 
     async def set_designated_reporters(
-        self, channel_id: str, user_ids: list[str]
+        self, channel_id: str, user_ids: list[str], display_names: dict[str, str] | None = None
     ) -> None:
         """Replace the active reporter list for a channel with user_ids."""
         try:
@@ -193,14 +193,18 @@ class ReportService:
                         )
                     )
                     target = result.scalar_one_or_none()
+                    name = (display_names or {}).get(uid)
                     if target is None:
                         target = ChannelReportTarget(
                             channel_id=channel_id,
                             aad_object_id=uid,
+                            display_name=name,
                         )
                         session.add(target)
                     else:
                         target.is_active = True
+                        if name:
+                            target.display_name = name
 
                 logger.info(
                     "Set %d designated reporters for channel=%s", len(user_ids), channel_id

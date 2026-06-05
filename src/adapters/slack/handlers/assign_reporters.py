@@ -52,7 +52,21 @@ class AssignReportersHandler:
             logger.warning("AssignReportersHandler: no users selected by %s", user_id)
             return
 
-        await _save_reporters(channel_id, selected_users)
+        # Fetch display names from Slack
+        display_names: dict[str, str] = {}
+        for uid in selected_users:
+            try:
+                resp = await client.users_info(user=uid)
+                profile = resp["user"]["profile"]
+                display_names[uid] = (
+                    profile.get("display_name")
+                    or profile.get("real_name")
+                    or uid
+                )
+            except Exception:
+                display_names[uid] = uid
+
+        await _save_reporters(channel_id, selected_users, display_names)
 
         names = " ".join(f"<@{uid}>" for uid in selected_users)
         await client.chat_postMessage(
@@ -74,9 +88,6 @@ async def _is_team_lead(user_id: str, channel_id: str) -> bool:
         return True
 
 
-async def _save_reporters(channel_id: str, user_ids: list[str]) -> None:
-    try:
-        from src.services.reports.report_service import ReportService
-        await ReportService().set_designated_reporters(channel_id, user_ids)
-    except ImportError:
-        logging.getLogger(__name__).warning("ReportService stub — reporters not persisted")
+async def _save_reporters(channel_id: str, user_ids: list[str], display_names: dict[str, str] | None = None) -> None:
+    from src.services.reports.report_service import ReportService
+    await ReportService().set_designated_reporters(channel_id, user_ids, display_names or {})
