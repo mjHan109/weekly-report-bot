@@ -106,6 +106,16 @@ async def handle_aggregate_confirm(ack, body, client, logger):
     )
 
 
+@slack_app.action("send_mail_confirm")
+async def handle_send_mail_confirm(ack, body, client, logger):
+    """Team lead confirms sending the aggregated report email."""
+    await ack()
+    from src.adapters.slack.handlers.aggregate_report import AggregateReportHandler
+    await AggregateReportHandler().handle_send_mail_action(
+        body=body, client=client, logger=logger
+    )
+
+
 def get_slack_app() -> AsyncApp:
     """Return the shared Slack Bolt app instance."""
     return slack_app

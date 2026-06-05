@@ -72,6 +72,12 @@ class Settings(BaseSettings):
             if part.strip()
         ]
 
+    # ── Gmail SMTP ───────────────────────────────────────────────────────────────
+    gmail_user: str = Field(default="", description="Gmail address used as SMTP login")
+    gmail_app_password: str = Field(default="", description="Gmail App Password (16-char)")
+    mail_from: str = Field(default="", description="Sender address shown in email From header")
+    mail_to: str = Field(default="", description="Default recipient address for weekly reports")
+
     # ── Slack Bot ────────────────────────────────────────────────────────────────
     slack_bot_token: str = Field(default="", description="Slack Bot User OAuth Token (xoxb-...)")
     slack_signing_secret: str = Field(default="", description="Slack App Signing Secret")

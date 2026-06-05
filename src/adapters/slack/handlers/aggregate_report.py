@@ -79,6 +79,47 @@ class AggregateReportHandler:
         logger.info("AggregateReportHandler: aggregate posted | channel=%s", channel_id)
 
 
+    async def handle_send_mail_action(self, body: dict, client, logger) -> None:
+        """Send the aggregated weekly report email after team lead confirms."""
+        user_id: str = body["user"]["id"]
+        channel_id: str = body["channel"]["id"]
+        value: str = body["actions"][0].get("value", "|")
+        channel_id_from_value, report_week = (value.split("|") + [""])[:2]
+        channel_id = channel_id_from_value or channel_id
+
+        is_lead = await _is_team_lead(user_id, channel_id)
+        if not is_lead:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id, text="권한이 없습니다."
+            )
+            return
+
+        # Get aggregated content
+        aggregated_text = await _aggregate(channel_id)
+
+        # Build subject
+        subject = f"[주간 보고] {report_week} 팀 주간 보고서"
+
+        # Send email
+        try:
+            from src.services.mail.smtp_service import GmailSmtpService
+            await GmailSmtpService().send_weekly_report(
+                subject=subject,
+                body_text=aggregated_text,
+            )
+            await client.chat_postMessage(
+                channel=channel_id,
+                text=f"✅ 주간 보고 메일이 발송되었습니다. (`{report_week}`)",
+            )
+            logger.info("Mail sent | channel=%s | week=%s", channel_id, report_week)
+        except Exception as exc:
+            logger.error("Mail send failed: %s", exc)
+            await client.chat_postMessage(
+                channel=channel_id,
+                text=f"❌ 메일 발송 실패: {exc}",
+            )
+
+
 async def _is_team_lead(user_id: str, channel_id: str) -> bool:
     try:
         from src.services.reports.report_service import ReportService

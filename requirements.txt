@@ -21,6 +21,7 @@ anthropic>=0.28.0,<1.0.0
 
 # ── Slack Bot ─────────────────────────────────────────────────────────────────
 slack-bolt>=1.18.0,<2.0.0
+aiosmtplib>=3.0.0,<4.0.0   # async SMTP for Gmail
 aiohttp>=3.9.0,<4.0.0       # required by slack-bolt async
 
 # ── Security / HMAC ───────────────────────────────────────────────────────────
