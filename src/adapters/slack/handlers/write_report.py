@@ -37,21 +37,14 @@ class WriteReportHandler:
             )
             return
 
-        # Duplicate submission check
-        already_submitted = await _already_submitted_this_week(user_id, channel_id)
-        if already_submitted:
-            await client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text="이번 주 보고를 이미 제출하셨습니다.",
-            )
-            return
-
         is_late = await _is_past_deadline(channel_id)
 
-        # Open modal
+        # Load existing report content if already submitted
+        existing = await _get_existing_report(user_id, channel_id)
+
+        # Open modal (pre-filled if editing)
         from src.adapters.slack.blocks.personal_preview import build_write_report_modal
-        modal = build_write_report_modal(channel_id=channel_id, is_late=is_late)
+        modal = build_write_report_modal(channel_id=channel_id, is_late=is_late, existing=existing)
         await client.views_open(trigger_id=body["trigger_id"], view=modal)
 
         logger.info(
@@ -66,13 +59,13 @@ class WriteReportHandler:
         is_late = is_late_str == "true"
 
         values = view["state"]["values"]
-        report_content = (
-            values.get("report_block", {})
-            .get("report_input", {})
-            .get("value", "")
-        )
+        done = values.get("done_block", {}).get("done_input", {}).get("value", "").strip()
+        inprogress = values.get("inprogress_block", {}).get("inprogress_input", {}).get("value", "").strip()
+        plan = values.get("plan_block", {}).get("plan_input", {}).get("value", "").strip()
 
-        if not report_content.strip():
+        report_content = f"[완료한 업무]\n{done}\n\n[진행 중인 업무]\n{inprogress}\n\n[다음 주 계획]\n{plan}"
+
+        if not (done or inprogress or plan):
             logger.warning("WriteReportHandler: empty report content from user=%s", user_id)
             return
 
@@ -110,33 +103,63 @@ async def _is_designated_reporter(user_id: str, channel_id: str) -> bool:
         return True
 
 
-async def _already_submitted_this_week(user_id: str, channel_id: str) -> bool:
+async def _get_existing_report(user_id: str, channel_id: str) -> dict[str, str] | None:
+    """Return parsed sections of existing report, or None if not submitted."""
     try:
         from src.services.reports.report_service import ReportService
-        return await ReportService().has_submitted_this_week(user_id, channel_id)
-    except ImportError:
-        return False
+        from src.infra.db import _get_session_factory
+        from src.services.reports.week_utils import current_week_key
+        from src.domain.repositories.personal_report_repo import PersonalReportRepository
+        from src.domain.enums import ReportStatus
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            repo = PersonalReportRepository(session)
+            report = await repo.get(channel_id, current_week_key(), user_id)
+            if report and report.status in (ReportStatus.SUBMITTED, ReportStatus.LATE_SUBMITTED):
+                return _parse_report_sections(report.content or "")
+        return None
+    except Exception:
+        return None
+
+
+def _parse_report_sections(content: str) -> dict[str, str]:
+    sections = {"완료한 업무": "", "진행 중인 업무": "", "다음 주 계획": ""}
+    current = None
+    lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip("[] \t")
+        if stripped in sections:
+            if current and lines:
+                sections[current] = "\n".join(lines).strip()
+            current = stripped
+            lines = []
+        elif current:
+            lines.append(line)
+    if current and lines:
+        sections[current] = "\n".join(lines).strip()
+    return sections
 
 
 async def _is_past_deadline(channel_id: str) -> bool:
-    try:
-        from src.services.reports.deadline_service import DeadlineService
-        return await DeadlineService().is_past_deadline(channel_id)
-    except ImportError:
-        return False
+    """True only when it's Thursday AND past 13:00 KST. Fri+ = new week, not late."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    now_kst = datetime.now(tz=ZoneInfo("Asia/Seoul"))
+    # weekday(): 0=Mon, 3=Thu, 4=Fri
+    if now_kst.weekday() == 3 and now_kst.hour >= 13:
+        return True
+    return False
 
 
 async def _save_report(user_id: str, channel_id: str, content: str, is_late: bool) -> None:
-    try:
-        from src.services.reports.submission_service import SubmissionService
-        await SubmissionService().submit_report(
-            user_id=user_id,
-            channel_id=channel_id,
-            content=content,
-            is_late=is_late,
-        )
-    except ImportError:
-        logging.getLogger(__name__).warning("SubmissionService stub — report not persisted")
+    from src.services.reports.report_service import ReportService
+    await ReportService().submit_report(
+        user_id=user_id,
+        channel_id=channel_id,
+        content=content,
+        is_late=is_late,
+    )
 
 
 async def _all_submitted(channel_id: str) -> bool:

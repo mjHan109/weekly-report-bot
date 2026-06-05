@@ -8,11 +8,38 @@ Block Kit builders for personal report flow:
 from __future__ import annotations
 
 
-def build_write_report_modal(channel_id: str, is_late: bool) -> dict:
-    """Build the report writing Modal view payload."""
-    title = "이번 주 보고 작성"
+def build_write_report_modal(channel_id: str, is_late: bool, existing: dict | None = None) -> dict:
+    """Build the report writing Modal view payload with 3 separate fields."""
+    title = "주간 보고 수정" if existing else "주간 보고 작성"
+    ex = existing or {}
+
+    def _input(block_id, action_id, label, placeholder, key):
+        el = {
+            "type": "plain_text_input",
+            "action_id": action_id,
+            "multiline": True,
+            "placeholder": {"type": "plain_text", "text": placeholder},
+        }
+        if ex.get(key):
+            el["initial_value"] = ex[key]
+        return {"block_id": block_id, "type": "input", "label": {"type": "plain_text", "text": label}, "element": el}
+
+    blocks = [
+        _input("done_block", "done_input", "✅  완료한 업무",
+               "1. 업무명\n    - 세부 내용\n2. 업무명\n    - 세부 내용", "완료한 업무"),
+        _input("inprogress_block", "inprogress_input", "🔄  진행 중인 업무",
+               "1. 업무명\n    - 세부 내용", "진행 중인 업무"),
+        _input("plan_block", "plan_input", "📅  다음 주 계획",
+               "1. 업무명\n2. 업무명", "다음 주 계획"),
+    ]
+
     if is_late:
-        title += " (지각)"
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": "⚠️ 마감(13:00)이 지난 지각 제출입니다."}
+            ],
+        })
 
     return {
         "type": "modal",
@@ -21,35 +48,7 @@ def build_write_report_modal(channel_id: str, is_late: bool) -> dict:
         "title": {"type": "plain_text", "text": title},
         "submit": {"type": "plain_text", "text": "제출"},
         "close": {"type": "plain_text", "text": "취소"},
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*이번 주 업무 내용을 입력하세요.*\n"
-                        "• 완료한 업무\n"
-                        "• 진행 중인 업무\n"
-                        "• 다음 주 계획"
-                        + ("\n\n⚠️ *마감(13:00)이 지난 지각 제출입니다.*" if is_late else "")
-                    ),
-                },
-            },
-            {
-                "block_id": "report_block",
-                "type": "input",
-                "label": {"type": "plain_text", "text": "보고 내용"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "report_input",
-                    "multiline": True,
-                    "placeholder": {
-                        "type": "plain_text",
-                        "text": "이번 주 업무 내용을 작성하세요...",
-                    },
-                },
-            },
-        ],
+        "blocks": blocks,
     }
 
 
