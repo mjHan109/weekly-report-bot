@@ -87,6 +87,29 @@ async def cmd_register_lead(ack, body, client, logger):
     await RegisterTeamLeadHandler().handle(body=body, client=client, logger=logger)
 
 
+@slack_app.command("/메일설정")
+async def cmd_mail_settings(ack, body, client, logger):
+    await ack()
+    from src.adapters.slack.handlers.mail_settings import MailSettingsHandler
+    await MailSettingsHandler().handle(body=body, client=client, logger=logger)
+
+
+@slack_app.command("/설정")
+async def cmd_settings(ack, body, client, logger):
+    """통합 설정 — /메일설정과 동일한 모달을 엽니다."""
+    await ack()
+    from src.adapters.slack.handlers.mail_settings import MailSettingsHandler
+    await MailSettingsHandler().handle(body=body, client=client, logger=logger)
+
+
+@slack_app.command("/보고현황")
+async def cmd_report_status(ack, body, client, logger):
+    """이번 주 보고 제출 현황 조회."""
+    await ack()
+    from src.adapters.slack.handlers.report_status import ReportStatusHandler
+    await ReportStatusHandler().handle(body=body, client=client, logger=logger)
+
+
 # ---------------------------------------------------------------------------
 # Modal (view) submission handlers
 # ---------------------------------------------------------------------------
@@ -121,6 +144,13 @@ async def handle_step_confirm(ack, body, view, client):
     await ack()
     from src.adapters.slack.handlers.write_report_steps import on_confirm_submit
     await on_confirm_submit(view=view, user_id=body["user"]["id"], client=client)
+
+
+@slack_app.view("mail_settings_modal")
+async def handle_mail_settings_modal(ack, body, view, logger):
+    await ack()
+    from src.adapters.slack.handlers.mail_settings import MailSettingsHandler
+    await MailSettingsHandler().handle_modal_submit(body=body, view=view, logger=logger)
 
 
 @slack_app.view("assign_reporters_modal")
@@ -161,8 +191,15 @@ async def action_dm_open(ack, body, client, logger):
 # ---------------------------------------------------------------------------
 
 @slack_app.event("message")
-async def handle_dm_message(event, client, logger):
+async def handle_dm_message(event, body, client, logger):
     """Route incoming DM messages to the conversational report flow."""
+    # ── 중복 이벤트 방지 ──────────────────────────────────────────────────────
+    from src.adapters.slack.event_deduplicator import is_duplicate_event
+    event_id = body.get("event_id")
+    if is_duplicate_event(event_id):
+        logger.debug("Duplicate event dropped | event_id=%s", event_id)
+        return
+
     channel_type = event.get("channel_type")
     subtype = event.get("subtype")
     user_id = event.get("user")
@@ -170,8 +207,8 @@ async def handle_dm_message(event, client, logger):
     text = event.get("text", "")
 
     logger.info(
-        "message event | channel_type=%s subtype=%s user=%s channel=%s text_len=%d",
-        channel_type, subtype, user_id, dm_channel, len(text),
+        "message event | event_id=%s channel_type=%s subtype=%s user=%s channel=%s text_len=%d",
+        event_id, channel_type, subtype, user_id, dm_channel, len(text),
     )
 
     if channel_type != "im":
@@ -189,9 +226,25 @@ async def handle_dm_message(event, client, logger):
         logger.info("DM message ignored — no active flow | user=%s", user_id)
 
 
+@slack_app.action("resume_draft_write")
+async def action_resume_draft(ack, body, client, logger):
+    """[이어쓰기] button — resume from saved DRAFT."""
+    await ack()
+    import json
+    payload = json.loads(body["actions"][0]["value"])
+    user_id = body["user"]["id"]
+    dm_channel = body["channel"]["id"]
+    from src.adapters.slack.handlers.dm_report_flow import resume_draft
+    await resume_draft(
+        user_id=user_id, dm_channel=dm_channel,
+        channel_id=payload["channel_id"], is_late=payload["is_late"],
+        client=client,
+    )
+
+
 @slack_app.action("quick_write_start")
 async def action_quick_write_start(ack, body, client, logger):
-    """[빠른 작성] button — start conversational flow."""
+    """[빠른 작성] / [새로 작성] button — start conversational flow."""
     await ack()
     import json
     payload = json.loads(body["actions"][0]["value"])
@@ -318,9 +371,28 @@ async def action_edit_plan(ack, body, client):
     )
 
 
+@slack_app.action("send_reminder_dms")
+async def handle_send_reminder_dms(ack, body, client, logger):
+    """Send DM reminders to unsubmitted reporters."""
+    await ack()
+    from src.adapters.slack.handlers.aggregate_report import AggregateReportHandler
+    await AggregateReportHandler().handle_reminder_action(body=body, client=client, logger=logger)
+
+
+@slack_app.action("status_aggregate_trigger")
+async def handle_status_aggregate_trigger(ack, body, client, logger):
+    """/보고현황 에서 [팀 보고 취합] 버튼 — /취합 흐름을 바로 시작."""
+    await ack()
+    user_id: str = body["user"]["id"]
+    channel_id: str = body["actions"][0]["value"]
+    fake_body = {"user_id": user_id, "channel_id": channel_id}
+    from src.adapters.slack.handlers.aggregate_report import AggregateReportHandler
+    await AggregateReportHandler().handle(body=fake_body, client=client, logger=logger)
+
+
 @slack_app.action("aggregate_confirm")
 async def handle_aggregate_confirm(ack, body, client, logger):
-    """Team lead confirms aggregation and triggers mail draft."""
+    """Team lead confirms aggregation — builds draft and posts preview."""
     await ack()
     from src.adapters.slack.handlers.aggregate_report import AggregateReportHandler
     await AggregateReportHandler().handle_confirm_action(
@@ -328,14 +400,270 @@ async def handle_aggregate_confirm(ack, body, client, logger):
     )
 
 
-@slack_app.action("send_mail_confirm")
-async def handle_send_mail_confirm(ack, body, client, logger):
-    """Team lead confirms sending the aggregated report email."""
+@slack_app.action("mail_draft_open")
+async def handle_mail_draft_open(ack, body, client, logger):
+    """Show email draft preview as an ephemeral message to the team lead."""
     await ack()
-    from src.adapters.slack.handlers.aggregate_report import AggregateReportHandler
-    await AggregateReportHandler().handle_send_mail_action(
-        body=body, client=client, logger=logger
+    draft_id = body["actions"][0]["value"]
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    from src.services.acl.team_lead_service import require_team_lead_slack
+    if not await require_team_lead_slack(user_id, channel_id, client):
+        return
+
+    from src.adapters.slack.draft_store import get_draft
+    from src.adapters.slack.blocks.mail_draft_preview import build_mail_draft_preview
+    draft = get_draft(draft_id)
+    if not draft:
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="메일 초안을 찾을 수 없습니다. /취합 을 다시 실행해주세요."
+        )
+        return
+
+    msg = build_mail_draft_preview(draft)
+    await client.chat_postEphemeral(channel=channel_id, user=user_id, **msg)
+    logger.info("mail_draft_open | draft=%s | user=%s", draft_id, user_id)
+
+
+@slack_app.action("mail_draft_edit")
+async def handle_mail_draft_edit(ack, body, client, logger):
+    """Open edit modal for the email draft."""
+    await ack()
+    draft_id = body["actions"][0]["value"]
+    trigger_id = body["trigger_id"]
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    from src.services.acl.team_lead_service import require_team_lead_slack
+    if not await require_team_lead_slack(user_id, channel_id, client):
+        return
+
+    from src.adapters.slack.draft_store import get_draft
+    from src.adapters.slack.blocks.mail_draft_modal import build_mail_draft_modal
+    draft = get_draft(draft_id)
+    if not draft:
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="메일 초안을 찾을 수 없습니다. /취합 을 다시 실행해주세요."
+        )
+        return
+
+    # Try to load departments from org_users for quick-fill
+    departments: list[str] = []
+    try:
+        from src.infra.db import _get_session_factory
+        from src.domain.repositories.org_user_repo import OrgUserRepository
+        factory = _get_session_factory()
+        async with factory() as session:
+            repo = OrgUserRepository(session)
+            departments = await repo.list_departments()
+    except Exception as e:
+        logger.debug("Could not load departments: %s", e)
+
+    await client.views_open(
+        trigger_id=trigger_id,
+        view=build_mail_draft_modal(draft, departments=departments or None),
     )
+    logger.info("mail_draft_edit modal opened | draft=%s | depts=%d", draft_id, len(departments))
+
+
+@slack_app.action("dept_select")
+async def handle_dept_select(ack, body, client, logger):
+    """User selected a department — fill To field with all dept emails."""
+    await ack()
+    selected_dept = body["actions"][0]["selected_option"]["value"]
+    view_id = body["view"]["id"]
+    draft_id = body["view"]["private_metadata"]
+
+    from src.adapters.slack.draft_store import get_draft, update_draft
+    draft = get_draft(draft_id)
+    if not draft:
+        return
+
+    # Fetch department members from DB
+    emails: list[str] = []
+    try:
+        from src.infra.db import _get_session_factory
+        from src.domain.repositories.org_user_repo import OrgUserRepository
+        factory = _get_session_factory()
+        async with factory() as session:
+            repo = OrgUserRepository(session)
+            users = await repo.get_by_department(selected_dept)
+            emails = [u.email for u in users if u.email]
+    except Exception as e:
+        logger.warning("dept_select: DB error: %s", e)
+
+    if not emails:
+        return
+
+    mail_to = ", ".join(emails)
+    update_draft(draft_id, mail_to=mail_to)
+    draft = get_draft(draft_id)
+
+    # Reload departments for the updated modal
+    departments: list[str] = []
+    try:
+        from src.infra.db import _get_session_factory
+        from src.domain.repositories.org_user_repo import OrgUserRepository
+        factory = _get_session_factory()
+        async with factory() as session:
+            repo = OrgUserRepository(session)
+            departments = await repo.list_departments()
+    except Exception:
+        pass
+
+    from src.adapters.slack.blocks.mail_draft_modal import build_mail_draft_modal
+    await client.views_update(
+        view_id=view_id,
+        view=build_mail_draft_modal(draft, departments=departments or None),
+    )
+    logger.info("dept_select: filled To with %d emails from dept=%s", len(emails), selected_dept)
+
+
+@slack_app.view("mail_draft_edit_modal")
+async def handle_mail_draft_edit_modal(ack, body, view, client, logger):
+    """Save edited draft and re-post ephemeral preview."""
+    await ack()
+    draft_id = view["private_metadata"]
+    values = view["state"]["values"]
+
+    mail_to = values["mail_to"]["value"]["value"].strip()
+    mail_cc = (values["mail_cc"]["value"]["value"] or "").strip()
+    mail_subject = values["mail_subject"]["value"]["value"].strip()
+    mail_body = values["mail_body"]["value"]["value"].strip()
+
+    from src.adapters.slack.draft_store import get_draft, update_draft
+    draft = get_draft(draft_id)
+    if not draft:
+        logger.warning("mail_draft_edit_modal: draft not found | draft=%s", draft_id)
+        return
+
+    update_draft(draft_id, mail_to=mail_to, mail_cc=mail_cc, mail_subject=mail_subject, mail_body=mail_body)
+    draft = get_draft(draft_id)
+
+    user_id = body["user"]["id"]
+    channel_id = draft.channel_id
+
+    from src.adapters.slack.blocks.mail_draft_preview import build_mail_draft_preview
+    msg = build_mail_draft_preview(draft)
+    await client.chat_postEphemeral(channel=channel_id, user=user_id, **msg)
+    logger.info("mail_draft updated | draft=%s", draft_id)
+
+
+@slack_app.action("mail_draft_send")
+async def handle_mail_draft_send(ack, body, client, logger):
+    """Send the email draft."""
+    await ack()
+    draft_id = body["actions"][0]["value"]
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    # ── 팀장 권한 체크 ────────────────────────────────────────────────────────
+    from src.services.acl.team_lead_service import require_team_lead_slack
+    if not await require_team_lead_slack(user_id, channel_id, client):
+        return
+
+    from src.adapters.slack.draft_store import get_draft, delete_draft, update_draft
+    draft = get_draft(draft_id)
+    if not draft:
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="메일 초안을 찾을 수 없습니다. /취합 을 다시 실행해주세요."
+        )
+        return
+
+    # ── Idempotency: 중복 클릭 방지 ──────────────────────────────────────────
+    if draft.is_sending:
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="⏳ 이미 발송 중입니다. 잠시 기다려주세요."
+        )
+        return
+    update_draft(draft_id, is_sending=True)
+
+    if not draft.mail_to:
+        update_draft(draft_id, is_sending=False)
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="수신자 이메일 주소가 없습니다. ✏️ 수정 버튼으로 수신자를 입력해주세요."
+        )
+        return
+
+    try:
+        from src.services.mail.smtp_service import GmailSmtpService
+        await GmailSmtpService().send_weekly_report(
+            subject=draft.mail_subject,
+            body_text=draft.mail_body,
+            to=draft.mail_to,
+            cc=draft.mail_cc,
+        )
+
+        # ── AuditLog 기록 ────────────────────────────────────────────────────
+        try:
+            from src.infra.db import _get_session_factory
+            from src.domain.repositories.audit_log_repo import AuditLogRepository
+            from src.services.reports.report_service import ReportService
+            aad_id = await ReportService().resolve_slack_to_aad(user_id)
+            factory = _get_session_factory()
+            async with factory() as session:
+                async with session.begin():
+                    await AuditLogRepository(session).append(
+                        event_type="mail.send",
+                        actor_aad_id=aad_id,
+                        channel_id=channel_id,
+                        week_key=draft.report_week,
+                        payload={
+                            "draft_id": draft_id,
+                            "to": draft.mail_to,
+                            "cc": draft.mail_cc,
+                            "subject": draft.mail_subject,
+                        },
+                    )
+        except Exception as audit_exc:
+            logger.warning("AuditLog write failed (non-fatal): %s", audit_exc)
+
+        delete_draft(draft_id)
+        await client.chat_postMessage(
+            channel=draft.channel_id,
+            text=f"✅ 주간 보고 메일이 발송되었습니다. (수신: {draft.mail_to})",
+        )
+        logger.info("Mail sent | draft=%s | to=%s | cc=%s", draft_id, draft.mail_to, draft.mail_cc)
+    except Exception as exc:
+        update_draft(draft_id, is_sending=False)
+        logger.error("Mail send failed | draft=%s | %s", draft_id, exc)
+
+        from src.adapters.slack.auth_notify import (
+            is_token_error, is_rate_limit_error,
+            notify_token_expired, notify_rate_limited, notify_graph_error,
+        )
+        if is_token_error(exc):
+            await notify_token_expired(channel_id, user_id, client)
+        elif is_rate_limit_error(exc):
+            await notify_rate_limited(channel_id, user_id, client)
+        else:
+            await notify_graph_error(channel_id, user_id, client, detail=str(exc))
+
+
+@slack_app.action("mail_draft_cancel")
+async def handle_mail_draft_cancel(ack, body, client, logger):
+    """Cancel and delete the email draft."""
+    await ack()
+    draft_id = body["actions"][0]["value"]
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    from src.services.acl.team_lead_service import require_team_lead_slack
+    if not await require_team_lead_slack(user_id, channel_id, client):
+        return
+
+    from src.adapters.slack.draft_store import delete_draft
+    delete_draft(draft_id)
+    await client.chat_postEphemeral(
+        channel=channel_id, user=user_id, text="메일 발송이 취소되었습니다."
+    )
+    logger.info("mail_draft cancelled | draft=%s | user=%s", draft_id, user_id)
 
 
 def get_slack_app() -> AsyncApp:

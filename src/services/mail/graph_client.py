@@ -172,7 +172,26 @@ class GraphClient:
                         response.status_code,
                     )
 
-                # 5xx or 429 — record failure and retry
+                # 429 — honour Retry-After header if present
+                if response.status_code == 429:
+                    retry_after_raw = response.headers.get("Retry-After", "")
+                    try:
+                        retry_after_secs = float(retry_after_raw)
+                    except (ValueError, TypeError):
+                        retry_after_secs = delay_secs  # fall back to normal backoff
+                    # Cap at 120s to avoid infinite wait on misconfigured servers
+                    retry_after_secs = min(retry_after_secs, 120.0)
+                    logger.warning(
+                        "GraphClient: 429 rate-limited attempt=%d retry_after=%.1fs",
+                        attempt + 1,
+                        retry_after_secs,
+                    )
+                    last_exc = GraphAPIError("HTTP 429 rate limited", 429)
+                    if attempt < _RETRY_MAX_ATTEMPTS:
+                        time.sleep(retry_after_secs)
+                    continue
+
+                # 5xx — record failure and retry with exponential backoff
                 logger.warning(
                     "GraphClient: retryable status=%d attempt=%d",
                     response.status_code,
@@ -190,7 +209,7 @@ class GraphClient:
                 )
                 last_exc = exc
 
-            # Backoff before next attempt (skip sleep after last attempt)
+            # Exponential backoff before next attempt (skip after last attempt)
             if attempt < _RETRY_MAX_ATTEMPTS:
                 time.sleep(delay_secs)
                 delay_secs *= _RETRY_MULTIPLIER

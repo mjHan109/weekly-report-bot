@@ -16,6 +16,10 @@ Methods
   register_team_lead(user_id, channel_id) -> None
   set_designated_reporters(channel_id, user_ids) -> None
   submit_report(user_id, channel_id, content, is_late) -> None
+  resolve_slack_to_aad(slack_user_id) -> str
+  auto_link_slack_user(slack_user_id, client) -> str
+  get_unsubmitted_with_slack_ids(channel_id) -> list[dict]
+  send_unsubmitted_reminders(channel_id, client) -> int
 """
 
 from __future__ import annotations
@@ -213,6 +217,202 @@ class ReportService:
             logger.error("set_designated_reporters failed: %s", exc)
             raise
 
+    # ── Slack ↔ AAD user mapping ──────────────────────────────────────────────
+
+    async def resolve_slack_to_aad(self, slack_user_id: str) -> str:
+        """Return the AAD object ID linked to slack_user_id, or slack_user_id as fallback.
+
+        Falls back to slack_user_id so existing flows continue to work when the
+        org directory has not yet been synced or the user is not yet linked.
+        """
+        try:
+            async with _session() as session:
+                from src.domain.repositories.org_user_repo import OrgUserRepository
+                repo = OrgUserRepository(session)
+                user = await repo.get_by_slack_id(slack_user_id)
+                return user.aad_object_id if user else slack_user_id
+        except Exception as exc:
+            logger.warning("resolve_slack_to_aad failed: %s — using slack_user_id", exc)
+            return slack_user_id
+
+    async def auto_link_slack_user(self, slack_user_id: str, client) -> str:
+        """Fetch the user's email from Slack profile, link to OrgUser, return aad_object_id.
+
+        Calls the Slack API (users_info) to get the profile email, then upserts
+        the slack_user_id onto the matching OrgUser row.
+        Returns aad_object_id if linked, slack_user_id as fallback.
+        """
+        try:
+            resp = await client.users_info(user=slack_user_id)
+            email = resp["user"]["profile"].get("email", "")
+            if not email:
+                logger.warning("auto_link: no email in Slack profile for %s", slack_user_id)
+                return slack_user_id
+
+            async with _session() as session:
+                from src.domain.repositories.org_user_repo import OrgUserRepository
+                repo = OrgUserRepository(session)
+
+                # Check if already linked
+                existing = await repo.get_by_slack_id(slack_user_id)
+                if existing:
+                    return existing.aad_object_id
+
+                # Link by email
+                user = await repo.link_slack_id_by_email(email, slack_user_id)
+                if user:
+                    logger.info(
+                        "Linked Slack %s → AAD %s via email %s",
+                        slack_user_id, user.aad_object_id, email,
+                    )
+                    return user.aad_object_id
+
+            logger.warning("auto_link: no OrgUser found for email=%s", email)
+            return slack_user_id
+        except Exception as exc:
+            logger.warning("auto_link_slack_user failed: %s — fallback to slack_user_id", exc)
+            return slack_user_id
+
+    # ── 미제출자 리마인드 ─────────────────────────────────────────────────────
+
+    async def get_unsubmitted_with_slack_ids(self, channel_id: str) -> list[dict]:
+        """Return pending reporters with their Slack user IDs for DM reminders.
+
+        Returns list of {aad_id, display_name, slack_user_id} where slack_user_id
+        may be None if the user hasn't been linked yet.
+        """
+        try:
+            async with _session() as session:
+                from src.domain.repositories.channel_config_repo import ChannelConfigRepository
+                from src.domain.repositories.personal_report_repo import PersonalReportRepository
+                from src.domain.repositories.org_user_repo import OrgUserRepository
+                from src.domain.enums import ReportStatus
+
+                config_repo = ChannelConfigRepository(session)
+                report_repo = PersonalReportRepository(session)
+                org_repo = OrgUserRepository(session)
+                week_key = current_week_key()
+
+                targets = await config_repo.get_active_targets(channel_id)
+                submitted_ids = await report_repo.get_submitted_aad_ids(channel_id, week_key)
+
+                result = []
+                for t in targets:
+                    if t.aad_object_id not in submitted_ids:
+                        org_user = await org_repo.get_by_aad_id(t.aad_object_id)
+                        result.append({
+                            "aad_id": t.aad_object_id,
+                            "display_name": t.display_name or t.aad_object_id,
+                            "slack_user_id": org_user.slack_user_id if org_user else None,
+                        })
+                return result
+        except Exception as exc:
+            logger.warning("get_unsubmitted_with_slack_ids failed: %s", exc)
+            return []
+
+    async def send_unsubmitted_reminders(self, channel_id: str, client) -> int:
+        """Send DM reminders to reporters who haven't submitted this week.
+
+        Returns the number of DMs sent.
+        """
+        unsubmitted = await self.get_unsubmitted_with_slack_ids(channel_id)
+        sent = 0
+        for reporter in unsubmitted:
+            slack_id = reporter.get("slack_user_id")
+            if not slack_id:
+                logger.warning(
+                    "No slack_user_id for aad=%s — cannot send reminder DM",
+                    reporter["aad_id"],
+                )
+                continue
+            try:
+                dm = await client.conversations_open(users=slack_id)
+                dm_channel = dm["channel"]["id"]
+                await client.chat_postMessage(
+                    channel=dm_channel,
+                    text=(
+                        f"⏰ *주간 보고 제출 알림*\n\n"
+                        f"아직 이번 주 보고서를 제출하지 않으셨습니다.\n"
+                        f"`/주간보고` 명령어로 지금 제출해주세요!"
+                    ),
+                )
+                sent += 1
+                logger.info("Reminder DM sent to %s", slack_id)
+            except Exception as exc:
+                logger.warning("Failed to send reminder to %s: %s", slack_id, exc)
+        return sent
+
+    # ── Draft (임시저장) ──────────────────────────────────────────────────────
+
+    async def save_draft(
+        self,
+        user_id: str,
+        channel_id: str,
+        content: str,
+        client=None,
+    ) -> None:
+        """Upsert a PersonalReport with DRAFT status (임시저장).
+
+        Creates or overwrites the PENDING/DRAFT row for this user/channel/week.
+        Does NOT change rows that are already SUBMITTED or LATE_SUBMITTED.
+        """
+        try:
+            if client is not None:
+                aad_id = await self.auto_link_slack_user(user_id, client)
+            else:
+                aad_id = await self.resolve_slack_to_aad(user_id)
+
+            async with _session() as session:
+                from src.domain.models.personal_report import PersonalReport
+                from src.domain.repositories.personal_report_repo import PersonalReportRepository
+                from src.domain.enums import ReportStatus
+
+                week_key = current_week_key()
+                repo = PersonalReportRepository(session)
+                report = await repo.get(channel_id, week_key, aad_id)
+
+                if report is not None and report.status in (
+                    ReportStatus.SUBMITTED, ReportStatus.LATE_SUBMITTED
+                ):
+                    # Already submitted — don't overwrite with a draft
+                    return
+
+                if report is None:
+                    report = PersonalReport(
+                        channel_id=channel_id,
+                        week_key=week_key,
+                        aad_object_id=aad_id,
+                    )
+
+                report.content = content
+                report.status = ReportStatus.DRAFT
+                await repo.save(report)
+                logger.debug("Draft saved: slack=%s aad=%s channel=%s", user_id, aad_id, channel_id)
+        except Exception as exc:
+            # Non-fatal: in-memory state still drives the flow
+            logger.warning("save_draft failed (non-fatal): %s", exc)
+
+    async def get_draft_report(
+        self, user_id: str, channel_id: str
+    ) -> dict | None:
+        """Return the current week's DRAFT report content, or None.
+
+        Returns {content: str, week_key: str} if a DRAFT exists.
+        """
+        try:
+            aad_id = await self.resolve_slack_to_aad(user_id)
+            async with _session() as session:
+                from src.domain.repositories.personal_report_repo import PersonalReportRepository
+                from src.domain.enums import ReportStatus
+                repo = PersonalReportRepository(session)
+                week_key = current_week_key()
+                report = await repo.get(channel_id, week_key, aad_id)
+                if report is not None and report.status == ReportStatus.DRAFT:
+                    return {"content": report.content or "", "week_key": week_key}
+        except Exception as exc:
+            logger.warning("get_draft_report failed: %s", exc)
+        return None
+
     # ── Submission ────────────────────────────────────────────────────────────
 
     async def submit_report(
@@ -221,23 +421,44 @@ class ReportService:
         channel_id: str,
         content: str,
         is_late: bool,
+        client=None,
     ) -> None:
-        """Save a personal report via SubmissionService."""
+        """Save a personal report via SubmissionService.
+
+        Resolves Slack user_id → AAD object ID via OrgUser mapping.
+        If client is provided, auto-links via Slack profile email when no mapping exists.
+        """
         try:
+            # Resolve Slack user_id to AAD object ID
+            if client is not None:
+                aad_id = await self.auto_link_slack_user(user_id, client)
+            else:
+                aad_id = await self.resolve_slack_to_aad(user_id)
+
             async with _session() as session:
                 from src.services.reports.submission_service import SubmissionService
+                from src.domain.repositories.audit_log_repo import AuditLogRepository
                 week_key = current_week_key()
                 svc = SubmissionService(session)
-                await svc.submit(
+                report = await svc.submit(
                     channel_id=channel_id,
                     week_key=week_key,
-                    actor_aad_id=user_id,
-                    target_aad_id=user_id,
+                    actor_aad_id=aad_id,
+                    target_aad_id=aad_id,
                     content=content,
                 )
+                event_type = "report.late_submit" if is_late else "report.submit"
+                await AuditLogRepository(session).append(
+                    event_type=event_type,
+                    actor_aad_id=aad_id,
+                    channel_id=channel_id,
+                    week_key=week_key,
+                    personal_report_id=getattr(report, "id", None),
+                    payload={"slack_user_id": user_id, "is_late": is_late},
+                )
                 logger.info(
-                    "Report submitted: user=%s channel=%s week=%s late=%s",
-                    user_id, channel_id, week_key, is_late,
+                    "Report submitted: slack=%s aad=%s channel=%s week=%s late=%s",
+                    user_id, aad_id, channel_id, week_key, is_late,
                 )
         except Exception as exc:
             logger.error("submit_report failed: %s", exc)

@@ -10,6 +10,7 @@ from src.infra.db import create_tables
 from src.api.routes.health import router as health_router
 from src.api.routes.scheduler import router as scheduler_router
 from src.api.routes.slack import router as slack_router
+from src.api.routes.admin import router as admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(scheduler_router)
     app.include_router(slack_router)
+    app.include_router(admin_router)
 
     return app
 

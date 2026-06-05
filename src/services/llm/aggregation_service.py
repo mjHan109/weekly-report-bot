@@ -171,20 +171,44 @@ class AggregationService:
 
         return "\n".join(lines)
 
-    def format_for_email(self, aggregated: str, team_name: str = "개발팀") -> str:
-        """Wrap aggregated content in a professional Korean email body."""
-        week_key = current_week_key()
+    def format_for_email(
+        self,
+        aggregated: str,
+        greeting: str = "",
+        closing: str = "",
+        team_name: str = "개발팀",
+        sender_name: str = "",
+    ) -> str:
+        """Wrap aggregated content using greeting/closing templates.
+
+        Template variables: {sender_name}, {team_name}, {month}, {week}, {week_key}
+        """
         today = date.today()
         month = today.month
-        # Calculate week-of-month (roughly)
         week_of_month = (today.day - 1) // 7 + 1
+        week_key = current_week_key()
 
-        return (
-            f"안녕하세요.\n\n"
-            f"{team_name} {month}월 {week_of_month}주차 주간 보고 드립니다.\n\n"
-            f"{'─' * 40}\n\n"
-            f"{aggregated}\n\n"
-            f"{'─' * 40}\n\n"
-            f"수고하셨습니다.\n"
-            f"{team_name} 드림"
-        )
+        ctx = {
+            "sender_name": sender_name,
+            "team_name": team_name,
+            "month": month,
+            "week": week_of_month,
+            "week_key": week_key,
+        }
+
+        if not greeting:
+            greeting = (
+                f"안녕하세요.\n"
+                f"{team_name} {sender_name}입니다.\n"
+                f"{month}월 {week_of_month}주차 팀 주간보고 송부 드립니다."
+            ).strip()
+        else:
+            greeting = greeting.format_map(ctx)
+
+        if not closing:
+            closing = f"수고하셨습니다.\n{sender_name or team_name} 드림"
+        else:
+            closing = closing.format_map(ctx)
+
+        sep = "─" * 40
+        return f"{greeting}\n\n{sep}\n\n{aggregated}\n\n{sep}\n\n{closing}"

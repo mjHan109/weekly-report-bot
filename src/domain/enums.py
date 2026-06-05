@@ -17,12 +17,14 @@ class AggregationMode(str, enum.Enum):
 class ReportStatus(str, enum.Enum):
     """Lifecycle status of an individual PersonalReport.
 
-    PENDING        — not yet submitted (default at week start).
+    PENDING        — not yet started (default at week start).
+    DRAFT          — user has started writing but not yet submitted (DM flow in progress).
     SUBMITTED      — submitted on or before Thursday 13:00 KST.
     LATE_SUBMITTED — submitted after the deadline (self-submit only, no proxy).
     """
 
     PENDING = "pending"
+    DRAFT = "draft"
     SUBMITTED = "submitted"
     LATE_SUBMITTED = "late_submitted"
 

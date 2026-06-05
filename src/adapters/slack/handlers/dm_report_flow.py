@@ -85,12 +85,60 @@ def set_state(user_id: str, step: str, channel_id: str, is_late: bool, data: dic
 # ---------------------------------------------------------------------------
 
 async def send_report_menu(user_id: str, channel_id: str, is_late: bool, client) -> None:
-    """Open DM and show the initial menu buttons."""
+    """Open DM and show the initial menu buttons.
+
+    If a DRAFT report exists for this week, shows [이어쓰기] as the first option.
+    """
     dm = await client.conversations_open(users=user_id)
     dm_channel = dm["channel"]["id"]
 
     late_note = " ⚠️ _(마감 후 제출)_" if is_late else ""
     value = json.dumps({"channel_id": channel_id, "is_late": is_late})
+
+    # Check for an existing DRAFT in DB
+    has_draft = False
+    try:
+        from src.services.reports.report_service import ReportService
+        draft_info = await ReportService().get_draft_report(user_id, channel_id)
+        has_draft = draft_info is not None
+    except Exception:
+        pass
+
+    draft_notice = (
+        "\n\n📌 _작성 중인 보고서가 있습니다. [이어쓰기]로 계속하세요._"
+        if has_draft else ""
+    )
+
+    buttons = []
+    if has_draft:
+        buttons.append({
+            "type": "button",
+            "action_id": "resume_draft_write",
+            "text": {"type": "plain_text", "text": "이어쓰기"},
+            "style": "primary",
+            "value": value,
+        })
+    buttons += [
+        {
+            "type": "button",
+            "action_id": "quick_write_start",
+            "text": {"type": "plain_text", "text": "새로 작성" if has_draft else "빠른 작성"},
+            "style": "primary" if not has_draft else "danger",
+            "value": value,
+        },
+        {
+            "type": "button",
+            "action_id": "load_last_week_dm",
+            "text": {"type": "plain_text", "text": "지난주 보고 불러오기"},
+            "value": value,
+        },
+        {
+            "type": "button",
+            "action_id": "quick_write_cancel",
+            "text": {"type": "plain_text", "text": "취소"},
+            "value": value,
+        },
+    ]
 
     await client.chat_postMessage(
         channel=dm_channel,
@@ -99,41 +147,43 @@ async def send_report_menu(user_id: str, channel_id: str, is_late: bool, client)
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"📝 *주간 보고 작성*{late_note}\n\n작성 방식을 선택하세요.",
+                    "text": f"📝 *주간 보고 작성*{late_note}{draft_notice}\n\n작성 방식을 선택하세요.",
                 },
             },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "action_id": "quick_write_start",
-                        "text": {"type": "plain_text", "text": "빠른 작성"},
-                        "style": "primary",
-                        "value": value,
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "load_last_week_dm",
-                        "text": {"type": "plain_text", "text": "지난주 보고 불러오기"},
-                        "value": value,
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "quick_write_cancel",
-                        "text": {"type": "plain_text", "text": "취소"},
-                        "value": value,
-                    },
-                ],
-            },
+            {"type": "actions", "elements": buttons},
         ],
         text="주간 보고 작성",
     )
 
 
+async def resume_draft(user_id: str, dm_channel: str, channel_id: str, is_late: bool, client) -> None:
+    """Load existing DRAFT content from DB and jump to preview step."""
+    try:
+        from src.services.reports.report_service import ReportService
+        draft_info = await ReportService().get_draft_report(user_id, channel_id)
+        if draft_info and draft_info.get("content"):
+            data = _parse_content_sections(draft_info["content"])
+            _set_state(user_id, "step_confirm", channel_id, is_late, data)
+            await _send_preview(user_id, dm_channel, data, channel_id, is_late, client)
+            return
+    except Exception as exc:
+        logger.warning("resume_draft failed: %s — starting fresh", exc)
+
+    # Fallback to fresh start if draft load fails
+    await start_quick_write(user_id, dm_channel, channel_id, is_late, client)
+
+
 async def start_quick_write(user_id: str, dm_channel: str, channel_id: str, is_late: bool, client) -> None:
     """Start conversational flow from the first step."""
     _set_state(user_id, "step_done", channel_id, is_late, {})
+
+    # Create empty DRAFT in DB for persistence across server restarts
+    try:
+        from src.services.reports.report_service import ReportService
+        await ReportService().save_draft(user_id, channel_id, "", client=client)
+    except Exception as exc:
+        logger.warning("save_draft on start failed (non-fatal): %s", exc)
+
     await client.chat_postMessage(
         channel=dm_channel,
         text=STEP_PROMPTS["step_done"],
@@ -199,6 +249,18 @@ async def handle_dm_step(user_id: str, dm_channel: str, text: str, client) -> bo
 
     channel_id = state["channel_id"]
     is_late = state["is_late"]
+
+    # Persist partial content to DB as DRAFT
+    try:
+        from src.services.reports.report_service import ReportService
+        partial_content = (
+            f"[완료한 업무]\n{state['data'].get('완료한 업무', '')}\n\n"
+            f"[진행 중인 업무]\n{state['data'].get('진행 중인 업무', '')}\n\n"
+            f"[다음 주 계획]\n{state['data'].get('다음 주 계획', '')}"
+        )
+        await ReportService().save_draft(user_id, channel_id, partial_content)
+    except Exception as exc:
+        logger.debug("step DRAFT save failed (non-fatal): %s", exc)
 
     if next_step == "step_confirm":
         await _send_preview(user_id, dm_channel, state["data"], channel_id, is_late, client)

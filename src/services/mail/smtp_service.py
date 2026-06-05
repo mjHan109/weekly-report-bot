@@ -37,7 +37,8 @@ class GmailSmtpService:
         self,
         subject: str,
         body_text: str,
-        to: str | None = None,
+        to: str = "",
+        cc: str = "",
     ) -> None:
         """
         Send the aggregated weekly report email.
@@ -45,10 +46,11 @@ class GmailSmtpService:
         Args:
             subject:   Email subject line.
             body_text: Plain-text body (Korean weekly report content).
-            to:        Override recipient. Falls back to MAIL_TO setting.
+            to:        Recipient address. Required — no fallback.
+            cc:        Comma-separated CC addresses (optional).
 
         Raises:
-            RuntimeError: If Gmail credentials are not configured.
+            RuntimeError: If Gmail credentials or recipient are missing.
             aiosmtplib.SMTPException: On SMTP-level errors.
         """
         settings = get_settings()
@@ -59,16 +61,17 @@ class GmailSmtpService:
                 "Set GMAIL_USER and GMAIL_APP_PASSWORD in .env"
             )
 
-        recipient = to or settings.mail_to
-        if not recipient:
-            raise RuntimeError("No recipient configured. Set MAIL_TO in .env")
+        if not to:
+            raise RuntimeError("수신자 이메일 주소가 없습니다.")
 
         sender = settings.mail_from or settings.gmail_user
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = sender
-        msg["To"] = recipient
+        msg["To"] = to
+        if cc:
+            msg["Cc"] = cc
 
         # Plain text part
         msg.attach(MIMEText(body_text, "plain", "utf-8"))
@@ -81,12 +84,17 @@ class GmailSmtpService:
         msg.attach(MIMEText(html, "html", "utf-8"))
 
         logger.info(
-            "Sending weekly report email | from=%s | to=%s | subject=%r",
-            sender, recipient, subject,
+            "Sending weekly report email | from=%s | to=%s | cc=%s | subject=%r",
+            sender, to, cc, subject,
         )
 
         # Strip spaces from App Password (Google shows it with spaces)
         password = settings.gmail_app_password.replace(" ", "")
+
+        # Build recipient list for SMTP envelope
+        recipients = [addr.strip() for addr in to.split(",") if addr.strip()]
+        if cc:
+            recipients += [addr.strip() for addr in cc.split(",") if addr.strip()]
 
         await aiosmtplib.send(
             msg,
@@ -95,6 +103,7 @@ class GmailSmtpService:
             username=settings.gmail_user,
             password=password,
             use_tls=True,
+            recipients=recipients,
         )
 
-        logger.info("Weekly report email sent successfully to %s", recipient)
+        logger.info("Weekly report email sent successfully to=%s cc=%s", to, cc)

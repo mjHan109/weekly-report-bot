@@ -27,6 +27,56 @@ class TeamLeadRegistrationError(ValueError):
     """Raised when team lead registration conditions are not met."""
 
 
+async def require_team_lead_slack(
+    slack_user_id: str,
+    channel_id: str,
+    client,
+    *,
+    ack=None,
+) -> bool:
+    """Check team lead permission for a Slack action handler.
+
+    Resolves slack_user_id → AAD object ID via OrgUser, then checks
+    ChannelConfig.team_lead_aad_id. Sends an ephemeral error message
+    and returns False if the user is not authorized.
+
+    Usage in a Slack action handler::
+
+        if not await require_team_lead_slack(user_id, channel_id, client):
+            return
+
+    Args:
+        slack_user_id: Slack user ID (e.g. "U12345").
+        channel_id:    Slack channel ID where the command was invoked.
+        client:        Slack WebClient (async).
+        ack:           Optional Bolt ack callable — called before the check
+                       so Slack doesn't time out on slow DB lookups.
+    """
+    if ack is not None:
+        await ack()
+
+    from src.services.reports.report_service import ReportService
+    svc = ReportService()
+    aad_id = await svc.resolve_slack_to_aad(slack_user_id)
+    is_lead = await svc.is_team_lead(aad_id, channel_id)
+
+    # Fallback: try the raw Slack user_id in case it was stored as-is
+    if not is_lead and aad_id != slack_user_id:
+        is_lead = await svc.is_team_lead(slack_user_id, channel_id)
+
+    if not is_lead:
+        try:
+            await client.chat_postEphemeral(
+                channel=channel_id,
+                user=slack_user_id,
+                text="⛔ 팀장 전용 기능입니다. `/팀장등록` 으로 팀장을 등록하세요.",
+            )
+        except Exception:
+            pass
+
+    return is_lead
+
+
 class TeamLeadService:
     """Manages team lead registration and ACL checks."""
 

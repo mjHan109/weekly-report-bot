@@ -3,7 +3,7 @@
 import logging
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from src.domain.enums import ReportStatus
 from src.domain.models.personal_report import PersonalReport
@@ -59,7 +59,7 @@ class PersonalReportRepository(ChannelScopedRepository[PersonalReport]):
     async def list_pending(
         self, channel_id: str, week_key: str
     ) -> Sequence[PersonalReport]:
-        """Return PENDING reports for a channel+week (not yet submitted)."""
+        """Return PENDING reports for a channel+week (not yet started)."""
         cid = self._require_channel_id(channel_id)
         result = await self._session.execute(
             select(PersonalReport).where(
@@ -69,6 +69,37 @@ class PersonalReportRepository(ChannelScopedRepository[PersonalReport]):
             )
         )
         return result.scalars().all()
+
+    async def list_not_submitted(
+        self, channel_id: str, week_key: str
+    ) -> Sequence[PersonalReport]:
+        """Return reports that are not yet submitted (PENDING or DRAFT)."""
+        cid = self._require_channel_id(channel_id)
+        result = await self._session.execute(
+            select(PersonalReport).where(
+                PersonalReport.channel_id == cid,
+                PersonalReport.week_key == week_key,
+                PersonalReport.status.in_(
+                    [ReportStatus.PENDING, ReportStatus.DRAFT]
+                ),
+            )
+        )
+        return result.scalars().all()
+
+    async def get_submitted_aad_ids(self, channel_id: str, week_key: str) -> set[str]:
+        """Return set of aad_object_ids that have submitted (on time or late)."""
+        submitted = await self.list_submitted(channel_id, week_key)
+        return {r.aad_object_id for r in submitted}
+
+    async def get_unsubmitted_aad_ids(
+        self, channel_id: str, week_key: str, all_reporter_aad_ids: list[str]
+    ) -> list[str]:
+        """Return aad_object_ids from all_reporter_aad_ids who have NOT submitted.
+
+        Used to build the 미제출자 list for DM reminders and team lead notifications.
+        """
+        submitted = await self.get_submitted_aad_ids(channel_id, week_key)
+        return [aid for aid in all_reporter_aad_ids if aid not in submitted]
 
     async def list_submitted(
         self, channel_id: str, week_key: str
@@ -95,6 +126,6 @@ class PersonalReportRepository(ChannelScopedRepository[PersonalReport]):
         return report
 
     async def count_pending(self, channel_id: str, week_key: str) -> int:
-        """Count members who have not yet submitted for the given week."""
-        pending = await self.list_pending(channel_id, week_key)
-        return len(pending)
+        """Count members who have not yet submitted (PENDING + DRAFT)."""
+        not_submitted = await self.list_not_submitted(channel_id, week_key)
+        return len(not_submitted)

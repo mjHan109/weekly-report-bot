@@ -10,10 +10,10 @@ from __future__ import annotations
 
 def build_aggregate_preview_message(
     aggregated_text: str,
-    channel_id: str,
+    draft_id: str,
     report_week: str,
 ) -> dict:
-    """Channel message showing the LLM-aggregated weekly report draft."""
+    """Channel message showing the aggregated weekly report with a draft review button."""
     # Slack block text max is 3000 chars
     preview = aggregated_text[:2800] + ("..." if len(aggregated_text) > 2800 else "")
 
@@ -35,19 +35,10 @@ def build_aggregate_preview_message(
                 "elements": [
                     {
                         "type": "button",
-                        "action_id": "send_mail_confirm",
-                        "text": {"type": "plain_text", "text": "메일 발송"},
+                        "action_id": "mail_draft_open",
+                        "text": {"type": "plain_text", "text": "📧 메일 초안 보기"},
                         "style": "primary",
-                        "value": f"{channel_id}|{report_week}",
-                        "confirm": {
-                            "title": {"type": "plain_text", "text": "메일 발송 확인"},
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "취합된 내용으로 메일을 발송하시겠습니까?",
-                            },
-                            "confirm": {"type": "plain_text", "text": "발송"},
-                            "deny": {"type": "plain_text", "text": "취소"},
-                        },
+                        "value": draft_id,
                     }
                 ],
             },
