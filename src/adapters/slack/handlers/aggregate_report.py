@@ -62,7 +62,7 @@ class AggregateReportHandler:
             return
 
         # Run LLM aggregation
-        aggregated_text = await _aggregate(channel_id)
+        aggregated_text = await _aggregate(channel_id, slack_client=client)
 
         from src.adapters.slack.blocks.aggregate_preview import build_aggregate_preview_message
         from datetime import date
@@ -95,7 +95,10 @@ class AggregateReportHandler:
             return
 
         # Get aggregated content
-        aggregated_text = await _aggregate(channel_id)
+        aggregated_text = await _aggregate(channel_id, slack_client=client)
+
+        from src.services.llm.aggregation_service import AggregationService
+        email_body = AggregationService().format_for_email(aggregated_text)
 
         # Build subject
         subject = f"[주간 보고] {report_week} 팀 주간 보고서"
@@ -105,7 +108,7 @@ class AggregateReportHandler:
             from src.services.mail.smtp_service import GmailSmtpService
             await GmailSmtpService().send_weekly_report(
                 subject=subject,
-                body_text=aggregated_text,
+                body_text=email_body,
             )
             await client.chat_postMessage(
                 channel=channel_id,
@@ -138,9 +141,8 @@ async def _get_pending_reporters(channel_id: str) -> list[str]:
         return []
 
 
-async def _aggregate(channel_id: str) -> str:
-    try:
-        from src.services.llm.aggregation_service import AggregationService
-        return await AggregationService().aggregate_weekly_reports(channel_id)
-    except ImportError:
-        return "*(집계 서비스 준비 중입니다)*"
+async def _aggregate(channel_id: str, slack_client=None) -> str:
+    from src.services.llm.aggregation_service import AggregationService
+    return await AggregationService().aggregate_weekly_reports(
+        channel_id, slack_client=slack_client
+    )
