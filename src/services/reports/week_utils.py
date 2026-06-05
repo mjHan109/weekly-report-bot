@@ -37,6 +37,11 @@ def current_week_key() -> str:
     return week_key_from_dt(datetime.now(tz=timezone.utc))
 
 
+def previous_week_key() -> str:
+    """Return the ISO week key for last week."""
+    return week_key_from_dt(datetime.now(tz=timezone.utc) - timedelta(weeks=1))
+
+
 def get_week_deadline(week_key: str) -> datetime:
     """Compute the absolute deadline (Thursday 13:00 KST) for ``week_key``.
 
