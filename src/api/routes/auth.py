@@ -84,9 +84,8 @@ def _client_id() -> str:
 
 
 def _redirect_uri() -> str:
-    return os.environ.get(
-        "AZURE_REDIRECT_URI", "http://localhost:8000/auth/callback"
-    )
+    from src.infra.config import get_settings
+    return get_settings().azure_redirect_uri
 
 
 _SCOPES = (

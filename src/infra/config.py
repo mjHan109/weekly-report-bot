@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     azure_tenant_id: str = Field(default="dev-tenant", description="Azure AD tenant ID")
     azure_client_id: str = Field(default="dev-client-id", description="Azure AD app client ID")
     azure_client_secret: str = Field(default="dev-client-secret", description="Azure AD app client secret")
+    azure_redirect_uri: str = Field(
+        default="http://localhost:8000/auth/callback",
+        description="OAuth redirect URI registered in Azure AD app",
+    )
     bot_app_id: str = Field(default="dev-local", description="Bot Framework App ID")
     bot_app_password: str = Field(default="dev-local", description="Bot Framework App Password")
 

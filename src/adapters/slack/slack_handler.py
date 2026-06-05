@@ -110,6 +110,29 @@ async def cmd_report_status(ack, body, client, logger):
     await ReportStatusHandler().handle(body=body, client=client, logger=logger)
 
 
+@slack_app.command("/재인증")
+async def cmd_reauth(ack, body, client, logger):
+    """Microsoft Graph 재인증 링크를 DM으로 전달합니다."""
+    await ack()
+    from src.infra.config import get_settings
+    settings = get_settings()
+    login_url = settings.azure_redirect_uri.replace("/auth/callback", "/auth/login")
+    user_id: str = body["user_id"]
+    channel_id: str = body["channel_id"]
+    await client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
+        text=(
+            "🔐 *Microsoft Outlook 인증*\n\n"
+            "아래 링크를 클릭해 Microsoft 계정으로 로그인하세요.\n"
+            f"<{login_url}|Microsoft로 로그인>\n\n"
+            "인증 완료 후 이 창을 닫으면 됩니다. "
+            "이후 `/취합` → 메일 발송 시 팀장 Outlook 계정으로 발송됩니다."
+        ),
+    )
+    logger.info("cmd_reauth: login link sent | user=%s", user_id)
+
+
 # ---------------------------------------------------------------------------
 # Modal (view) submission handlers
 # ---------------------------------------------------------------------------
@@ -591,27 +614,65 @@ async def handle_mail_draft_send(ack, body, client, logger):
         )
         return
 
+    import asyncio
+
+    to_list = [a.strip() for a in draft.mail_to.split(",") if a.strip()]
+    cc_list = [a.strip() for a in (draft.mail_cc or "").split(",") if a.strip()]
+
     try:
-        from src.services.mail.smtp_service import GmailSmtpService
-        await GmailSmtpService().send_weekly_report(
-            subject=draft.mail_subject,
-            body_text=draft.mail_body,
-            to=draft.mail_to,
-            cc=draft.mail_cc,
-        )
+        # ── 1. Resolve team lead AAD OID ─────────────────────────────────────
+        from src.services.reports.report_service import ReportService
+        oid = await ReportService().resolve_slack_to_aad(user_id)
+        sent_via = "smtp"
+
+        # ── 2. Try Graph API (Outlook) if a real AAD OID is available ────────
+        if oid and oid != user_id:
+            from src.services.mail.graph_client import GraphClient
+            from src.services.mail.token_manager import TokenManager, TokenUnavailableError
+            try:
+                gc = GraphClient(TokenManager())
+                loop = asyncio.get_event_loop()
+                msg_obj = await loop.run_in_executor(
+                    None,
+                    lambda: gc.create_draft(
+                        oid,
+                        to=to_list,
+                        cc=cc_list,
+                        subject=draft.mail_subject,
+                        body=draft.mail_body,
+                    ),
+                )
+                await loop.run_in_executor(None, lambda: gc.send_draft(oid, msg_obj["id"]))
+                sent_via = "graph"
+                logger.info("Mail sent via Graph | oid=%s | draft=%s", oid, draft_id)
+            except TokenUnavailableError:
+                # Token not yet issued — guide user to /재인증 and abort
+                update_draft(draft_id, is_sending=False)
+                from src.adapters.slack.auth_notify import notify_token_expired
+                await notify_token_expired(channel_id, user_id, client)
+                return
+
+        # ── 3. Fallback: Gmail SMTP (no Azure OID or Graph unavailable) ──────
+        if sent_via == "smtp":
+            from src.services.mail.smtp_service import GmailSmtpService
+            await GmailSmtpService().send_weekly_report(
+                subject=draft.mail_subject,
+                body_text=draft.mail_body,
+                to=draft.mail_to,
+                cc=draft.mail_cc,
+            )
+            logger.info("Mail sent via SMTP | draft=%s | to=%s", draft_id, draft.mail_to)
 
         # ── AuditLog 기록 ────────────────────────────────────────────────────
         try:
             from src.infra.db import _get_session_factory
             from src.domain.repositories.audit_log_repo import AuditLogRepository
-            from src.services.reports.report_service import ReportService
-            aad_id = await ReportService().resolve_slack_to_aad(user_id)
             factory = _get_session_factory()
             async with factory() as session:
                 async with session.begin():
                     await AuditLogRepository(session).append(
                         event_type="mail.send",
-                        actor_aad_id=aad_id,
+                        actor_aad_id=oid or user_id,
                         channel_id=channel_id,
                         week_key=draft.report_week,
                         payload={
@@ -619,28 +680,27 @@ async def handle_mail_draft_send(ack, body, client, logger):
                             "to": draft.mail_to,
                             "cc": draft.mail_cc,
                             "subject": draft.mail_subject,
+                            "via": sent_via,
                         },
                     )
         except Exception as audit_exc:
             logger.warning("AuditLog write failed (non-fatal): %s", audit_exc)
 
         delete_draft(draft_id)
+        via_label = "Outlook" if sent_via == "graph" else "Gmail"
         await client.chat_postMessage(
             channel=draft.channel_id,
-            text=f"✅ 주간 보고 메일이 발송되었습니다. (수신: {draft.mail_to})",
+            text=f"✅ 주간 보고 메일이 발송되었습니다. ({via_label} / 수신: {draft.mail_to})",
         )
-        logger.info("Mail sent | draft=%s | to=%s | cc=%s", draft_id, draft.mail_to, draft.mail_cc)
     except Exception as exc:
         update_draft(draft_id, is_sending=False)
         logger.error("Mail send failed | draft=%s | %s", draft_id, exc)
 
         from src.adapters.slack.auth_notify import (
-            is_token_error, is_rate_limit_error,
-            notify_token_expired, notify_rate_limited, notify_graph_error,
+            is_rate_limit_error,
+            notify_rate_limited, notify_graph_error,
         )
-        if is_token_error(exc):
-            await notify_token_expired(channel_id, user_id, client)
-        elif is_rate_limit_error(exc):
+        if is_rate_limit_error(exc):
             await notify_rate_limited(channel_id, user_id, client)
         else:
             await notify_graph_error(channel_id, user_id, client, detail=str(exc))
