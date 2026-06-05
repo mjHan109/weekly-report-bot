@@ -72,6 +72,14 @@ class Settings(BaseSettings):
             if part.strip()
         ]
 
+    # ── Slack Bot ────────────────────────────────────────────────────────────────
+    slack_bot_token: str = Field(default="", description="Slack Bot User OAuth Token (xoxb-...)")
+    slack_signing_secret: str = Field(default="", description="Slack App Signing Secret")
+
+    # ── Slack ─────────────────────────────────────────────────────────────────
+    slack_signing_secret: str = Field(default="", description="Slack app signing secret (required in prod)")
+    slack_bot_token: str = Field(default="", description="Slack bot OAuth token (xoxb-...)")
+
     # ── Anthropic LLM ─────────────────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", description="Anthropic API key (required for LLM features)")
     anthropic_model: str = Field(
