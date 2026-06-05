@@ -1,138 +1,145 @@
 """
 Bot API route — POST /api/messages
 
-This is the single endpoint that Microsoft Bot Framework calls for all
-incoming bot activities (messages, invokes, etc.).
+Microsoft Bot Framework endpoint for all Teams activities.
+Rewritten to use FastAPI (botbuilder.core.BotFrameworkAdapter) instead of
+the aiohttp-specific BotFrameworkHttpAdapter.
 
-Security
---------
-- Bot Framework JWT verification is handled by BotFrameworkHttpClient /
-  botbuilder-integration-aiohttp's process_activity(). The adapter validates
-  the Authorization header (Bearer token) against Microsoft's JWKS endpoint
-  before our handler sees the activity.
-- See ADR-SEC-007 for the JWT verification decision.
+JWT verification
+----------------
+- botbuilder's BotFrameworkAdapter validates the Authorization Bearer token
+  against Microsoft's JWKS endpoint automatically.
+- In dev mode (BOT_APP_ID == "dev-local" or empty), JWT verification is
+  disabled so local testing works without Bot Framework credentials.
 
-Registration
-------------
-Mount this router in src/api/app.py:
-    from src.api.routes.bot import router as bot_router
-    app.include_router(bot_router)
-
-Environment variables required
--------------------------------
-    MICROSOFT_APP_ID       — Bot's AAD app registration ID
-    MICROSOFT_APP_PASSWORD — Bot's client secret
+Environment variables
+---------------------
+    BOT_APP_ID       — Bot's AAD app registration ID (empty = dev mode)
+    BOT_APP_PASSWORD — Bot's client secret
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
-from aiohttp import web
-from botbuilder.core import BotFrameworkAdapterSettings
-from botbuilder.integration.aiohttp import BotFrameworkHttpAdapter
-
-from src.adapters.teams.bot_handler import WeeklyReportBot
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
+router = APIRouter(tags=["bot"])
+
 # ---------------------------------------------------------------------------
-# Adapter + Bot singletons (created once at module load)
+# Lazy-init singletons (avoid crashing at import time when creds are missing)
 # ---------------------------------------------------------------------------
 
-_APP_ID: str = os.environ.get("MICROSOFT_APP_ID", "")
-_APP_PASSWORD: str = os.environ.get("MICROSOFT_APP_PASSWORD", "")
+_adapter = None
+_bot = None
 
-# ADR-SEC-007: empty APP_ID silently disables JWT verification — fail fast
-if not _APP_ID:
-    raise RuntimeError(
-        "MICROSOFT_APP_ID environment variable is not set. "
-        "Bot JWT verification would be disabled. Refusing to start."
+
+def _init() -> None:
+    """Initialize BotFrameworkAdapter + WeeklyReportBot once."""
+    global _adapter, _bot
+    if _adapter is not None:
+        return
+
+    from src.infra.config import get_settings
+    from botbuilder.core import BotFrameworkAdapter, BotFrameworkAdapterSettings
+    from src.adapters.teams.bot_handler import WeeklyReportBot
+
+    settings = get_settings()
+
+    # Empty app_id disables JWT verification (dev mode).
+    # "dev-local" sentinel from defaults → treat as empty.
+    app_id = "" if settings.bot_app_id in ("dev-local", "") else settings.bot_app_id
+    app_password = "" if settings.bot_app_password in ("dev-local", "") else settings.bot_app_password
+
+    adapter_settings = BotFrameworkAdapterSettings(
+        app_id=app_id,
+        app_password=app_password,
+    )
+    _adapter = BotFrameworkAdapter(adapter_settings)
+    _bot = WeeklyReportBot()
+
+    async def _on_error(context, error: Exception) -> None:
+        logger.error("BotFrameworkAdapter unhandled error: %s", error, exc_info=True)
+        try:
+            from botbuilder.schema import Activity, ActivityTypes
+            await context.send_activity(
+                Activity(
+                    type=ActivityTypes.message,
+                    text="처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                )
+            )
+        except Exception:
+            pass
+
+    _adapter.on_turn_error = _on_error
+    logger.info(
+        "BotFrameworkAdapter initialized | app_id=%s | jwt_verification=%s",
+        app_id or "(empty — dev mode)",
+        bool(app_id),
     )
 
-_adapter_settings = BotFrameworkAdapterSettings(
-    app_id=_APP_ID,
-    app_password=_APP_PASSWORD,
-)
-_adapter = BotFrameworkHttpAdapter(_adapter_settings)
-_bot = WeeklyReportBot()
 
-
-def get_adapter() -> BotFrameworkHttpAdapter:
-    """Return the shared adapter instance (used by notification_jobs)."""
+def get_adapter():
+    """Return the shared BotFrameworkAdapter (used by notification_jobs)."""
+    _init()
     return _adapter
 
 
 def get_app_id() -> str:
     """Return the bot App ID (used by notification_jobs for proactive auth)."""
-    return _APP_ID
+    from src.infra.config import get_settings
+    v = get_settings().bot_app_id
+    return "" if v in ("dev-local", "") else v
 
 
 # ---------------------------------------------------------------------------
-# Error handler — logs unhandled exceptions without exposing internals
+# Route
 # ---------------------------------------------------------------------------
 
-async def _on_error(context, error: Exception) -> None:
-    logger.error("BotFrameworkAdapter unhandled error: %s", error, exc_info=True)
-    # Do NOT reveal error details to the client
-    try:
-        from botbuilder.schema import Activity, ActivityTypes
-        await context.send_activity(
-            Activity(
-                type=ActivityTypes.message,
-                text="처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
-            )
-        )
-    except Exception:
-        pass  # Suppress secondary errors in the error handler
 
-
-_adapter.on_turn_error = _on_error
-
-# ---------------------------------------------------------------------------
-# Route handler
-# ---------------------------------------------------------------------------
-
-routes = web.RouteTableDef()
-
-
-@routes.post("/api/messages")
-async def messages(request: web.Request) -> web.Response:
+@router.post("/api/messages")
+async def messages(request: Request) -> Response:
     """
     POST /api/messages
 
-    Receives all Bot Framework activities, verifies the JWT, and dispatches
-    to WeeklyReportBot.on_turn().
-
-    Returns HTTP 200 on success, 401 on auth failure (handled by adapter),
-    500 on unexpected errors.
+    Receives all Bot Framework activities from Teams, verifies the JWT,
+    and dispatches to WeeklyReportBot.on_turn().
     """
-    if "application/json" not in request.headers.get("Content-Type", ""):
-        logger.warning("/api/messages: unexpected Content-Type: %s", request.headers.get("Content-Type"))
+    try:
+        _init()
+    except Exception as exc:
+        logger.error("Bot adapter init failed: %s", exc)
+        return Response(status_code=503, content="Bot not configured")
+
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        logger.warning("/api/messages: unexpected Content-Type: %s", content_type)
+        return Response(status_code=415)
 
     try:
-        response = await _adapter.process(request=request, bot=_bot)
-        # BotFrameworkHttpAdapter.process() returns an aiohttp Response
-        if response:
-            return response
-        return web.Response(status=200)
+        body = await request.json()
+    except Exception as exc:
+        logger.warning("/api/messages: invalid JSON body: %s", exc)
+        return Response(status_code=400)
+
+    from botbuilder.schema import Activity
+
+    activity = Activity().deserialize(body)
+    auth_header = request.headers.get("Authorization", "")
+
+    try:
+        invoke_response = await _adapter.process_activity(
+            activity, auth_header, _bot.on_turn
+        )
+        if invoke_response:
+            return JSONResponse(
+                content=invoke_response.body,
+                status_code=invoke_response.status,
+            )
+        return Response(status_code=200)
     except Exception as exc:
         logger.error("/api/messages unhandled exception: %s", exc, exc_info=True)
-        return web.Response(status=500, text="Internal Server Error")
-
-
-# ---------------------------------------------------------------------------
-# aiohttp Application factory helper
-# ---------------------------------------------------------------------------
-
-def create_bot_app() -> web.Application:
-    """
-    Create a standalone aiohttp Application with only the bot route.
-
-    For use in tests or when mounting the bot as a sub-application.
-    The main app (src/api/app.py) should call app.add_routes(routes) instead.
-    """
-    app = web.Application()
-    app.add_routes(routes)
-    return app
+        return Response(status_code=500)

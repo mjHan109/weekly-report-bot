@@ -69,6 +69,9 @@ class WeeklyReportBot(ActivityHandler):
             logger.warning("on_message_activity: missing aad_object_id — ignoring")
             return
 
+        # Persist ConversationReference for proactive messaging (scheduler jobs)
+        await _save_conversation_reference(turn_context)
+
         # Strip the bot's own @mention from the text so command matching is clean
         clean_text = _strip_at_mention(activity.text or "")
         turn_context.activity.text = clean_text
@@ -292,3 +295,16 @@ def _error_task_payload(message: str) -> Dict:
             "value": message,
         }
     }
+
+
+async def _save_conversation_reference(turn_context: TurnContext) -> None:
+    """Persist the ConversationReference so notification_jobs can send proactive messages."""
+    channel_id = _extract_channel_id(turn_context.activity)
+    if not channel_id:
+        return
+    try:
+        ref = TurnContext.get_conversation_reference(turn_context.activity)
+        from src.services.reports.channel_config_service import ChannelConfigService
+        await ChannelConfigService().set_conversation_reference(channel_id, ref)
+    except Exception as exc:
+        logger.warning("_save_conversation_reference failed channel=%s: %s", channel_id, exc)

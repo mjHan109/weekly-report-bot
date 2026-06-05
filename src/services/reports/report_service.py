@@ -310,6 +310,15 @@ class ReportService:
             logger.warning("get_unsubmitted_with_slack_ids failed: %s", exc)
             return []
 
+    async def get_pending_reporter_names(self, channel_id: str) -> list[str]:
+        """Return display names of reporters who have not yet submitted (Teams Bot용)."""
+        unsubmitted = await self.get_unsubmitted_with_slack_ids(channel_id)
+        return [u.get("display_name") or u["aad_id"] for u in unsubmitted]
+
+    async def get_pending_reporter_mentions(self, channel_id: str) -> list[dict]:
+        """Return [{aad_id, display_name}] for Teams @mention cards (notification_jobs용)."""
+        return await self.get_unsubmitted_with_slack_ids(channel_id)
+
     async def send_unsubmitted_reminders(self, channel_id: str, client) -> int:
         """Send DM reminders to reporters who haven't submitted this week.
 

@@ -156,9 +156,9 @@ async def post_deadline_card(channel_id: str) -> None:
 def _get_adapter_and_app_id():
     """Return (BotFrameworkAdapter, app_id) from the running application context."""
     try:
-        from src.api.app import get_adapter, get_app_id  # type: ignore
+        from src.api.routes.bot import get_adapter, get_app_id
         return get_adapter(), get_app_id()
-    except ImportError:
+    except Exception:
         logger.warning("App context not available — adapter stub returns None")
         return None, os.environ.get("MICROSOFT_APP_ID", "")
 
