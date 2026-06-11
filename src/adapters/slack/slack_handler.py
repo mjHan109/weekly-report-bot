@@ -110,28 +110,6 @@ async def cmd_report_status(ack, body, client, logger):
     await ReportStatusHandler().handle(body=body, client=client, logger=logger)
 
 
-@slack_app.command("/재인증")
-async def cmd_reauth(ack, body, client, logger):
-    """Microsoft Graph 재인증 링크를 DM으로 전달합니다."""
-    await ack()
-    from src.infra.config import get_settings
-    settings = get_settings()
-    login_url = settings.azure_redirect_uri.replace("/auth/callback", "/auth/login")
-    user_id: str = body["user_id"]
-    channel_id: str = body["channel_id"]
-    await client.chat_postEphemeral(
-        channel=channel_id,
-        user=user_id,
-        text=(
-            "🔐 *Microsoft Outlook 인증*\n\n"
-            "아래 링크를 클릭해 Microsoft 계정으로 로그인하세요.\n"
-            f"<{login_url}|Microsoft로 로그인>\n\n"
-            "인증 완료 후 이 창을 닫으면 됩니다. "
-            "이후 `/취합` → 메일 발송 시 팀장 Outlook 계정으로 발송됩니다."
-        ),
-    )
-    logger.info("cmd_reauth: login link sent | user=%s", user_id)
-
 
 # ---------------------------------------------------------------------------
 # Modal (view) submission handlers
